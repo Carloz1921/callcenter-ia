@@ -214,83 +214,54 @@ def clasificar(modelo, texto, umbral=0.50):
 
 def transcribir_audio(archivo_bytes, nombre_archivo, api_key):
     """
-    Transcribe audio usando Google Gemini API (gratis, funciona en Peru).
-    Gemini 1.5 Flash acepta audio directamente como entrada multimodal.
+    Transcribe audio usando Hugging Face Inference API con Whisper.
+    Gratis, funciona en Peru, sin tarjeta de credito.
+    Modelo: openai/whisper-large-v3
     """
     import urllib.request
     import json
-    import base64
 
-    # Detectar el tipo MIME segun extension
-    ext = nombre_archivo.split(".")[-1].lower()
-    mime_map = {
-        "mp3":  "audio/mp3",
-        "mp4":  "audio/mp4",
-        "wav":  "audio/wav",
-        "m4a":  "audio/m4a",
-        "ogg":  "audio/ogg",
-        "webm": "audio/webm",
-        "flac": "audio/flac",
+    url = "https://api-inference.huggingface.co/models/openai/whisper-large-v3"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/octet-stream",
     }
-    mime_type = mime_map.get(ext, "audio/mp3")
-
-    # Convertir audio a base64
-    audio_b64 = base64.b64encode(archivo_bytes).decode("utf-8")
-
-    # Construir el payload para Gemini 1.5 Flash
-    payload = {
-        "contents": [{
-            "parts": [
-                {
-                    "inline_data": {
-                        "mime_type": mime_type,
-                        "data": audio_b64
-                    }
-                },
-                {
-                    "text": (
-                        "Transcribe exactamente lo que dice este audio en espanol peruano. "
-                        "Devuelve SOLO el texto transcrito, sin comentarios, "
-                        "sin puntuacion extra y sin explicaciones adicionales."
-                    )
-                }
-            ]
-        }],
-        "generationConfig": {
-            "temperature": 0.0,
-            "maxOutputTokens": 1024,
-        }
-    }
-
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-2.0-flash:generateContent?key={api_key}"
-    )
 
     try:
-        data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
             url,
-            data=data,
-            headers={"Content-Type": "application/json"},
+            data=archivo_bytes,
+            headers=headers,
             method="POST"
         )
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=120) as resp:
             result = json.loads(resp.read())
 
-        # Extraer el texto de la respuesta
-        texto = result["candidates"][0]["content"]["parts"][0]["text"].strip()
+        # El modelo puede estar cargando la primera vez (error 503)
+        if "error" in result:
+            msg = result["error"]
+            if "loading" in msg.lower() or "503" in str(msg):
+                return None, "El modelo esta iniciando. Espera 20 segundos y vuelve a intentarlo."
+            return None, f"Error del modelo: {msg}"
+
+        texto = result.get("text", "").strip()
+        if not texto:
+            return None, "No se detecto voz en el audio. Verifica que el archivo tenga audio claro."
         return texto, None
 
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="ignore")
         try:
-            msg = json.loads(body).get("error", {}).get("message", body[:200])
+            msg = json.loads(body).get("error", body[:200])
         except Exception:
             msg = body[:200]
-        return None, f"Error Gemini ({e.code}): {msg}"
+        if e.code == 503:
+            return None, "Modelo iniciando. Espera 20 segundos y vuelve a intentarlo."
+        if e.code == 401:
+            return None, "API Key invalida. Verifica que copiaste bien tu token de Hugging Face."
+        return None, f"Error {e.code}: {msg}"
     except Exception as e:
-        return None, f"Error de transcripcion: {str(e)}"
+        return None, f"Error de conexion: {str(e)}"
 
 
 def mostrar_resultado_clasificacion(resultado, texto_consulta, origen="texto"):
@@ -356,18 +327,18 @@ with st.sidebar:
     st.session_state.umbral_val = umbral
 
     st.markdown("---")
-    st.markdown("### Gemini API Key")
+    st.markdown("### Hugging Face Token")
     st.caption("Necesaria solo para el tab de audio.")
     groq_key = st.text_input(
-        "API Key de Gemini",
+        "Token de Hugging Face",
         type="password",
-        placeholder="AIza...",
-        help="Obtén tu key gratis en aistudio.google.com"
+        placeholder="hf_...",
+        help="Obtén tu token gratis en huggingface.co/settings/tokens"
     )
     if groq_key:
-        st.success("Key cargada")
+        st.success("Token cargado")
     else:
-        st.info("Sin key: solo funciona el tab de texto")
+        st.info("Sin token: solo funciona el tab de texto")
 
     st.markdown("---")
     st.markdown("### Sesion actual")
@@ -384,7 +355,7 @@ with st.sidebar:
 
 # ── Header ────────────────────────────────────────────────────────────────────
 st.markdown("## 🤖 Call Center IA — Clasificador de Intencion")
-st.caption("Modelo Hibrido IA + Humano · NLP · Machine Learning · Gemini 1.5 Flash STT")
+st.caption("Modelo Hibrido IA + Humano · NLP · Machine Learning · Whisper STT (Hugging Face)")
 
 tab_audio, tab_texto, tab_metricas, tab_historial = st.tabs([
     "🎙️ Clasificar por Audio",
@@ -403,7 +374,7 @@ with tab_audio:
         st.markdown("#### Como funciona")
         st.markdown("""
         1. Sube un audio MP3, MP4, WAV o M4A
-        2. Gemini 1.5 Flash transcribe el audio a texto en espanol
+        2. Whisper (Hugging Face) transcribe el audio a texto en espanol
         3. Tu modelo NLP clasifica la intencion
         4. La IA decide si resuelve o escala al asesor
 
@@ -414,14 +385,14 @@ with tab_audio:
         **Velocidad:** aprox. 2 segundos por minuto de audio
         """)
 
-        st.markdown("#### Obtener API Key de Gemini (gratis)")
+        st.markdown("#### Obtener token de Hugging Face (gratis)")
         st.markdown("""
-        1. Ve a **aistudio.google.com** (el mismo sitio de Colab)
-        2. Inicia sesion con tu Gmail
-        3. Clic en **Get API Key → Create API Key**
-        4. Copia la key (empieza con `AIza...`)
-        5. Pegala en el sidebar izquierdo
-        6. **Limite gratuito:** 1,500 requests/dia · 0 costo
+        1. Ve a **huggingface.co** y crea una cuenta gratuita
+        2. Clic en tu foto → **Settings → Access Tokens**
+        3. Clic en **New token → Read → Generate**
+        4. Copia el token (empieza con `hf_...`)
+        5. Pegalo en el sidebar izquierdo
+        6. **Limite gratuito:** ilimitado para inferencia publica
         """)
 
     with col_upload:
@@ -444,13 +415,13 @@ with tab_audio:
             )
 
             if not groq_key:
-                st.warning("Ingresa tu API Key de Gemini en el sidebar para activar la transcripcion.")
+                st.warning("Ingresa tu token de Hugging Face en el sidebar para activar la transcripcion.")
 
             if procesar_btn and groq_key:
                 col_paso1, col_paso2 = st.columns(2)
 
                 with st.status("Procesando audio...", expanded=True) as status:
-                    st.write("Paso 1: Enviando audio a Gemini 1.5 Flash...")
+                    st.write("Paso 1: Enviando audio a Whisper (Hugging Face)...")
                     tiempo_inicio = time.time()
 
                     audio_bytes = audio_file.read()
