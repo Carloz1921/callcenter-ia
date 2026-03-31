@@ -1,0 +1,17 @@
+{
+  "version": "1.0.0",
+  "fecha": "2026-03-31T02:32:52.001883",
+  "algoritmo": "TF-IDF (ngram 1-2) + LinearSVC",
+  "categorias": [
+    "pedido",
+    "factura",
+    "reclamo",
+    "cuenta",
+    "general"
+  ],
+  "muestras_train": 64,
+  "muestras_test": 16,
+  "accuracy_test": 0.8125,
+  "accuracy_cv": 0.6875,
+  "umbral_confianza": 0.65
+}
