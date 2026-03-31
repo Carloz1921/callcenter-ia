@@ -360,16 +360,7 @@ with tab_audio:
 
         **Velocidad:** aprox. 2 segundos por minuto de audio
         """)
-
-        st.markdown("#### Obtener token de Hugging Face (gratis)")
-        st.markdown("""
-        1. Ve a **huggingface.co** y crea una cuenta gratuita
-        2. Clic en tu foto → **Settings → Access Tokens**
-        3. Clic en **New token → Read → Generate**
-        4. Copia el token (empieza con `hf_...`)
-        5. Pegalo en el sidebar izquierdo
-        6. **Limite gratuito:** ilimitado para inferencia publica
-        """)
+        
 
     with col_upload:
         st.markdown("#### Subir archivo de audio")
