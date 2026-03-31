@@ -221,30 +221,52 @@ def transcribir_audio(archivo_bytes, nombre_archivo, api_key):
     import urllib.request
     import json
 
-    url = "https://api-inference.huggingface.co/models/openai/whisper-large-v3"
+    url = "https://router.huggingface.co/hf-inference/models/openai/whisper-large-v3/v1/audio/transcriptions"
     headers = {
         "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/octet-stream",
     }
 
     try:
-        req = urllib.request.Request(
-            url,
-            data=archivo_bytes,
-            headers=headers,
-            method="POST"
-        )
+        import io
+        boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW"
+        ext = nombre_archivo.split(".")[-1].lower()
+        mime_map = {
+            "mp3": "audio/mpeg", "mp4": "audio/mp4",
+            "wav": "audio/wav",  "m4a": "audio/m4a",
+            "ogg": "audio/ogg",  "webm": "audio/webm",
+            "flac": "audio/flac",
+        }
+        mime = mime_map.get(ext, "audio/mpeg")
+
+        body = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="{nombre_archivo}"\r\n'
+            f"Content-Type: {mime}\r\n\r\n"
+        ).encode() + archivo_bytes + (
+            f"\r\n--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="language"\r\n\r\nes'
+            f"\r\n--{boundary}--\r\n"
+        ).encode()
+
+        headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+
+        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=120) as resp:
             result = json.loads(resp.read())
 
-        # El modelo puede estar cargando la primera vez (error 503)
-        if "error" in result:
-            msg = result["error"]
-            if "loading" in msg.lower() or "503" in str(msg):
-                return None, "El modelo esta iniciando. Espera 20 segundos y vuelve a intentarlo."
-            return None, f"Error del modelo: {msg}"
+        # Nueva API devuelve {"text": "..."} directamente
+        if isinstance(result, dict):
+            if "error" in result:
+                msg = result["error"]
+                if "loading" in str(msg).lower():
+                    return None, "El modelo esta iniciando. Espera 20 segundos y vuelve a intentarlo."
+                return None, f"Error del modelo: {msg}"
+            texto = result.get("text", "").strip()
+        elif isinstance(result, list) and len(result) > 0:
+            texto = result[0].get("text", "").strip()
+        else:
+            texto = ""
 
-        texto = result.get("text", "").strip()
         if not texto:
             return None, "No se detecto voz en el audio. Verifica que el archivo tenga audio claro."
         return texto, None
