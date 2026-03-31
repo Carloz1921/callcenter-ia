@@ -40,9 +40,13 @@ st.markdown("""
     border: none;
     border-radius: 8px;
 }
-.stButton > button:hover {
-    background: #C04010;
-    color: white;
+.stButton > button:hover { background: #C04010; color: white; }
+.audio-box {
+    border: 2px dashed #E8521A;
+    border-radius: 12px;
+    padding: 28px;
+    text-align: center;
+    background: #FFF7ED;
 }
 footer { visibility: hidden; }
 </style>
@@ -164,7 +168,6 @@ def cargar_modelo():
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.20, random_state=42, stratify=y
     )
-
     if os.path.exists("modelo_callcenter_ia.pkl"):
         with open("modelo_callcenter_ia.pkl", "rb") as f:
             pipe = pickle.load(f)
@@ -181,7 +184,6 @@ def cargar_modelo():
         ])
         pipe.fit(X_train, y_train)
         fuente = "modelo simulado (sin .pkl)"
-
     cv = cross_val_score(pipe, X, y, cv=5, scoring="accuracy")
     acc = pipe.score(X_test, y_test)
     return pipe, acc, cv.mean(), cv.std(), X_test, y_test, fuente
@@ -198,7 +200,8 @@ def clasificar(modelo, texto, umbral=0.50):
     ia_ok = resolvible and confianza >= umbral
     respuesta = RESPUESTAS[cat]
     if not ia_ok:
-        motivo = "Reclamo: siempre a asesor" if not resolvible else f"Confianza {confianza:.0%} bajo umbral"
+        motivo = ("Reclamo: siempre a asesor" if not resolvible
+                  else f"Confianza {confianza:.0%} bajo umbral {umbral:.0%}")
         respuesta = f"Derivando a asesor humano. Motivo: {motivo}."
     return {
         "categoria": cat,
@@ -209,23 +212,163 @@ def clasificar(modelo, texto, umbral=0.50):
     }
 
 
+def transcribir_audio(archivo_bytes, nombre_archivo, api_key):
+    """
+    Transcribe audio usando Google Gemini API (gratis, funciona en Peru).
+    Gemini 1.5 Flash acepta audio directamente como entrada multimodal.
+    """
+    import urllib.request
+    import json
+    import base64
+
+    # Detectar el tipo MIME segun extension
+    ext = nombre_archivo.split(".")[-1].lower()
+    mime_map = {
+        "mp3":  "audio/mp3",
+        "mp4":  "audio/mp4",
+        "wav":  "audio/wav",
+        "m4a":  "audio/m4a",
+        "ogg":  "audio/ogg",
+        "webm": "audio/webm",
+        "flac": "audio/flac",
+    }
+    mime_type = mime_map.get(ext, "audio/mp3")
+
+    # Convertir audio a base64
+    audio_b64 = base64.b64encode(archivo_bytes).decode("utf-8")
+
+    # Construir el payload para Gemini 1.5 Flash
+    payload = {
+        "contents": [{
+            "parts": [
+                {
+                    "inline_data": {
+                        "mime_type": mime_type,
+                        "data": audio_b64
+                    }
+                },
+                {
+                    "text": (
+                        "Transcribe exactamente lo que dice este audio en espanol peruano. "
+                        "Devuelve SOLO el texto transcrito, sin comentarios, "
+                        "sin puntuacion extra y sin explicaciones adicionales."
+                    )
+                }
+            ]
+        }],
+        "generationConfig": {
+            "temperature": 0.0,
+            "maxOutputTokens": 1024,
+        }
+    }
+
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"gemini-1.5-flash:generateContent?key={api_key}"
+    )
+
+    try:
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            result = json.loads(resp.read())
+
+        # Extraer el texto de la respuesta
+        texto = result["candidates"][0]["content"]["parts"][0]["text"].strip()
+        return texto, None
+
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="ignore")
+        try:
+            msg = json.loads(body).get("error", {}).get("message", body[:200])
+        except Exception:
+            msg = body[:200]
+        return None, f"Error Gemini ({e.code}): {msg}"
+    except Exception as e:
+        return None, f"Error de transcripcion: {str(e)}"
+
+
+def mostrar_resultado_clasificacion(resultado, texto_consulta, origen="texto"):
+    """Muestra el resultado de clasificacion de forma visual."""
+    cat = resultado["categoria"]
+    conf = resultado["confianza"]
+    ia = resultado["ia_resuelve"]
+
+    if ia:
+        st.success(f"🤖  RESOLUCION AUTOMATICA IA")
+    else:
+        st.error(f"👤  ESCALAMIENTO A ASESOR HUMANO")
+
+    col_a, col_b, col_c = st.columns(3)
+    col_a.metric("Categoria", f"{ICONS[cat]} {cat.upper()}")
+    col_b.metric("Confianza", f"{conf:.1%}")
+    col_c.metric("Origen", "🎙️ Audio" if origen == "audio" else "✏️ Texto")
+
+    st.markdown("**Consulta procesada:**")
+    st.info(texto_consulta)
+
+    st.markdown("**Respuesta de la IA:**")
+    if ia:
+        st.success(resultado["respuesta"])
+    else:
+        st.warning(resultado["respuesta"])
+
+    st.progress(int(conf * 100))
+
+    with st.expander("Ver detalle tecnico"):
+        st.json({
+            "categoria_detectada": cat,
+            "confianza": f"{conf:.4f}",
+            "umbral_configurado": st.session_state.get("umbral_val", 0.50),
+            "ia_resuelve": ia,
+            "origen_consulta": origen,
+            "timestamp": resultado["timestamp"],
+        })
+
+
 if "historial" not in st.session_state:
     st.session_state.historial = []
+if "umbral_val" not in st.session_state:
+    st.session_state.umbral_val = 0.50
 
 with st.spinner("Cargando modelo..."):
     modelo, acc_test, cv_mean, cv_std, X_test, y_test, fuente = cargar_modelo()
 
+# ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## 🤖 Call Center IA")
     st.markdown("**Modelo Hibrido IA + Humano**")
     st.caption(f"Fuente: {fuente}")
     st.markdown("---")
+
     st.markdown("### Configuracion")
     umbral = st.slider(
         "Umbral de confianza",
-        min_value=0.30, max_value=0.90, value=0.50, step=0.05,
-        help="Si la confianza es menor a este valor, la consulta escala al asesor humano."
+        min_value=0.30, max_value=0.90,
+        value=0.50, step=0.05,
+        help="Por debajo de este valor, la consulta escala al asesor humano."
     )
+    st.session_state.umbral_val = umbral
+
+    st.markdown("---")
+    st.markdown("### Gemini API Key")
+    st.caption("Necesaria solo para el tab de audio.")
+    groq_key = st.text_input(
+        "API Key de Gemini",
+        type="password",
+        placeholder="AIza...",
+        help="Obtén tu key gratis en aistudio.google.com"
+    )
+    if groq_key:
+        st.success("Key cargada")
+    else:
+        st.info("Sin key: solo funciona el tab de texto")
+
     st.markdown("---")
     st.markdown("### Sesion actual")
     total_h = len(st.session_state.historial)
@@ -239,12 +382,137 @@ with st.sidebar:
         st.session_state.historial = []
         st.rerun()
 
+# ── Header ────────────────────────────────────────────────────────────────────
 st.markdown("## 🤖 Call Center IA — Clasificador de Intencion")
-st.caption("Modelo Hibrido IA + Humano · NLP · Machine Learning · Automatizacion de consultas")
+st.caption("Modelo Hibrido IA + Humano · NLP · Machine Learning · Gemini 1.5 Flash STT")
 
-tab1, tab2, tab3 = st.tabs(["💬 Clasificador en vivo", "📊 Metricas del modelo", "📋 Historial"])
+tab_audio, tab_texto, tab_metricas, tab_historial = st.tabs([
+    "🎙️ Clasificar por Audio",
+    "✏️ Clasificar por Texto",
+    "📊 Metricas del modelo",
+    "📋 Historial",
+])
 
-with tab1:
+# ── TAB AUDIO ─────────────────────────────────────────────────────────────────
+with tab_audio:
+    st.markdown("### Sube un audio y la IA lo transcribe y clasifica automaticamente")
+
+    col_info, col_upload = st.columns([1, 1], gap="large")
+
+    with col_info:
+        st.markdown("#### Como funciona")
+        st.markdown("""
+        1. Sube un audio MP3, MP4, WAV o M4A
+        2. Gemini 1.5 Flash transcribe el audio a texto en espanol
+        3. Tu modelo NLP clasifica la intencion
+        4. La IA decide si resuelve o escala al asesor
+
+        **Formatos soportados:** MP3, MP4, WAV, M4A, OGG, WEBM
+
+        **Duracion maxima:** 25 MB por archivo
+
+        **Velocidad:** aprox. 2 segundos por minuto de audio
+        """)
+
+        st.markdown("#### Obtener API Key de Gemini (gratis)")
+        st.markdown("""
+        1. Ve a **aistudio.google.com** (el mismo sitio de Colab)
+        2. Inicia sesion con tu Gmail
+        3. Clic en **Get API Key → Create API Key**
+        4. Copia la key (empieza con `AIza...`)
+        5. Pegala en el sidebar izquierdo
+        6. **Limite gratuito:** 1,500 requests/dia · 0 costo
+        """)
+
+    with col_upload:
+        st.markdown("#### Subir archivo de audio")
+
+        audio_file = st.file_uploader(
+            "Arrastra tu archivo de audio aqui",
+            type=["mp3", "mp4", "wav", "m4a", "ogg", "webm"],
+            help="Sube la grabacion de la llamada del distribuidor"
+        )
+
+        if audio_file is not None:
+            st.audio(audio_file, format=audio_file.type)
+            st.caption(f"Archivo: {audio_file.name} | Tamano: {audio_file.size/1024:.1f} KB")
+
+            procesar_btn = st.button(
+                "Transcribir y Clasificar",
+                use_container_width=True,
+                disabled=not groq_key
+            )
+
+            if not groq_key:
+                st.warning("Ingresa tu API Key de Gemini en el sidebar para activar la transcripcion.")
+
+            if procesar_btn and groq_key:
+                col_paso1, col_paso2 = st.columns(2)
+
+                with st.status("Procesando audio...", expanded=True) as status:
+                    st.write("Paso 1: Enviando audio a Gemini 1.5 Flash...")
+                    tiempo_inicio = time.time()
+
+                    audio_bytes = audio_file.read()
+                    transcripcion, error = transcribir_audio(
+                        audio_bytes, audio_file.name, groq_key
+                    )
+
+                    if error:
+                        status.update(label="Error en transcripcion", state="error")
+                        st.error(f"Error: {error}")
+                    else:
+                        tiempo_stt = time.time() - tiempo_inicio
+                        st.write(f"Transcripcion completada en {tiempo_stt:.1f}s")
+
+                        st.write("Paso 2: Clasificando intencion con el modelo NLP...")
+                        resultado = clasificar(modelo, transcripcion, umbral)
+                        tiempo_total = time.time() - tiempo_inicio
+
+                        st.write(f"Clasificacion completada. Tiempo total: {tiempo_total:.1f}s")
+                        status.update(label="Procesamiento completado", state="complete")
+
+                    if not error:
+                        st.markdown("---")
+                        st.markdown("#### Transcripcion del audio")
+                        st.markdown(
+                            f'<div style="background:#F0F9FF;border-left:4px solid #0EA5E9;'
+                            f'padding:14px 18px;border-radius:0 8px 8px 0;font-style:italic;">'
+                            f'"{transcripcion}"</div>',
+                            unsafe_allow_html=True
+                        )
+
+                        st.markdown("---")
+                        st.markdown("#### Resultado de clasificacion")
+                        mostrar_resultado_clasificacion(resultado, transcripcion, origen="audio")
+
+                        st.session_state.historial.append({
+                            **resultado,
+                            "consulta": transcripcion,
+                            "origen": "audio",
+                            "archivo": audio_file.name,
+                        })
+
+                        st.markdown("---")
+                        col_t1, col_t2, col_t3 = st.columns(3)
+                        col_t1.metric("Tiempo STT", f"{tiempo_stt:.1f}s")
+                        col_t2.metric("Tiempo total", f"{tiempo_total:.1f}s")
+                        col_t3.metric("Palabras transcritas", len(transcripcion.split()))
+
+        else:
+            st.markdown("""
+            <div style="border:2px dashed #E8521A;border-radius:12px;padding:40px;
+            text-align:center;background:#FFF7ED;">
+            <div style="font-size:36px;margin-bottom:12px;">🎙️</div>
+            <div style="color:#C04010;font-weight:600;margin-bottom:6px;">
+            Arrastra un archivo de audio aqui</div>
+            <div style="color:#9CA3AF;font-size:13px;">
+            MP3 · MP4 · WAV · M4A · OGG · WEBM</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+# ── TAB TEXTO ─────────────────────────────────────────────────────────────────
+with tab_texto:
     col1, col2 = st.columns([1, 1], gap="large")
 
     with col1:
@@ -257,12 +525,12 @@ with tab1:
         st.markdown("**O elige un ejemplo:**")
         ejemplos = {
             "Seleccionar...": "",
-            "Pedido — IA resuelve":   "Necesito saber donde esta mi pedido PED-9921, lleva 3 dias sin llegar",
-            "Factura — IA resuelve":  "Me llego la factura FAC-0045 con el monto incorrecto",
-            "Cuenta — IA resuelve":   "Quiero actualizar mi direccion de entrega y ver mi linea de credito",
-            "General — IA resuelve":  "Cuales son los horarios de atencion y zonas de cobertura",
-            "Reclamo — escala siempre": "Recibi productos completamente danados y quiero hacer un reclamo formal",
-            "Ambigua — baja confianza": "Tengo una situacion con lo que me enviaron que no me cuadra",
+            "Pedido — IA resuelve":      "Necesito saber donde esta mi pedido PED-9921, lleva 3 dias sin llegar",
+            "Factura — IA resuelve":     "Me llego la factura FAC-0045 con el monto incorrecto",
+            "Cuenta — IA resuelve":      "Quiero actualizar mi direccion de entrega y ver mi linea de credito",
+            "General — IA resuelve":     "Cuales son los horarios de atencion y zonas de cobertura",
+            "Reclamo — escala siempre":  "Recibi productos completamente danados y quiero hacer un reclamo formal",
+            "Ambigua — baja confianza":  "Tengo una situacion con lo que me enviaron que no me cuadra",
         }
         sel = st.selectbox("Ejemplos rapidos:", list(ejemplos.keys()))
         if ejemplos[sel]:
@@ -277,33 +545,12 @@ with tab1:
             with st.spinner("Procesando..."):
                 time.sleep(0.3)
                 resultado = clasificar(modelo, consulta_texto, umbral)
-                st.session_state.historial.append({**resultado, "consulta": consulta_texto})
-
-            cat = resultado["categoria"]
-            conf = resultado["confianza"]
-            ia = resultado["ia_resuelve"]
-
-            if ia:
-                st.success(f"🤖 RESOLUCION AUTOMATICA IA")
-            else:
-                st.error(f"👤 ESCALAMIENTO A ASESOR HUMANO")
-
-            col_a, col_b = st.columns(2)
-            col_a.metric("Categoria detectada", f"{ICONS[cat]} {cat.upper()}")
-            col_b.metric("Confianza del modelo", f"{conf:.1%}")
-
-            st.markdown("**Consulta recibida:**")
-            st.info(consulta_texto)
-
-            st.markdown("**Respuesta de la IA:**")
-            if ia:
-                st.success(resultado["respuesta"])
-            else:
-                st.warning(resultado["respuesta"])
-
-            conf_pct = int(conf * 100)
-            st.markdown(f"Confianza: **{conf_pct}%** {'✅ sobre el umbral' if conf >= umbral else '⚠️ bajo el umbral'}")
-            st.progress(conf_pct)
+                st.session_state.historial.append({
+                    **resultado,
+                    "consulta": consulta_texto,
+                    "origen": "texto",
+                })
+            mostrar_resultado_clasificacion(resultado, consulta_texto, origen="texto")
 
         elif clasificar_btn:
             st.warning("Escribe o selecciona una consulta primero.")
@@ -312,10 +559,11 @@ with tab1:
             Ingresa una consulta y presiona **Clasificar consulta**.
 
             El modelo NLP analizara la intencion y determinara si la IA
-            puede resolver automaticamente o si debe escalar al equipo humano.
+            puede resolver automaticamente o escalar al asesor humano.
             """)
 
-with tab2:
+# ── TAB METRICAS ──────────────────────────────────────────────────────────────
+with tab_metricas:
     st.markdown("### Performance del modelo NLP/ML")
 
     c1, c2, c3, c4 = st.columns(4)
@@ -325,7 +573,6 @@ with tab2:
     c4.metric("Categorias", "5")
 
     st.markdown("---")
-
     col_cm, col_bar = st.columns(2, gap="large")
 
     with col_cm:
@@ -337,16 +584,18 @@ with tab2:
         sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
                     xticklabels=cats_ord, yticklabels=cats_ord,
                     ax=ax, linewidths=0.5)
-        ax.set_xlabel("Predicho", fontsize=10)
-        ax.set_ylabel("Real", fontsize=10)
+        ax.set_xlabel("Predicho")
+        ax.set_ylabel("Real")
         fig.tight_layout()
         st.pyplot(fig, use_container_width=True)
         plt.close()
 
     with col_bar:
         st.markdown("#### Accuracy por Categoria")
-        accs = [cm[i][i] / cm[i].sum() if cm[i].sum() > 0 else 0 for i in range(len(cats_ord))]
-        colors = ["#22c55e" if a >= 0.90 else "#f59e0b" if a >= 0.80 else "#ef4444" for a in accs]
+        accs = [cm[i][i] / cm[i].sum() if cm[i].sum() > 0 else 0
+                for i in range(len(cats_ord))]
+        colors = ["#22c55e" if a >= 0.90 else "#f59e0b" if a >= 0.80 else "#ef4444"
+                  for a in accs]
         fig2, ax2 = plt.subplots(figsize=(5, 4))
         bars = ax2.barh(cats_ord, [a * 100 for a in accs], color=colors, height=0.5)
         ax2.set_xlim(0, 115)
@@ -363,47 +612,55 @@ with tab2:
         plt.close()
 
     st.markdown("---")
-    st.markdown("#### Reporte de clasificacion")
+    st.markdown("#### Reporte completo de clasificacion")
     report = classification_report(y_test, y_pred, target_names=cats_ord, output_dict=True)
     df_rep = pd.DataFrame(report).T.round(2).iloc[:-3]
     df_rep.columns = ["Precision", "Recall", "F1-Score", "Soporte"]
     st.dataframe(df_rep, use_container_width=True)
 
-with tab3:
-    st.markdown("### Historial de consultas")
+# ── TAB HISTORIAL ─────────────────────────────────────────────────────────────
+with tab_historial:
+    st.markdown("### Historial de consultas de la sesion")
 
     if not st.session_state.historial:
-        st.info("Aun no hay consultas procesadas. Ve a la pestana Clasificador en vivo para comenzar.")
+        st.info("Aun no hay consultas procesadas.")
     else:
         total_s = len(st.session_state.historial)
         ia_s = sum(1 for r in st.session_state.historial if r["ia_resuelve"])
         conf_s = np.mean([r["confianza"] for r in st.session_state.historial])
+        audio_s = sum(1 for r in st.session_state.historial if r.get("origen") == "audio")
 
         k1, k2, k3, k4 = st.columns(4)
-        k1.metric("Total", total_s)
+        k1.metric("Total procesadas", total_s)
         k2.metric("IA resuelve", f"{ia_s} ({ia_s/total_s:.0%})")
         k3.metric("Escala a humano", total_s - ia_s)
-        k4.metric("Confianza promedio", f"{conf_s:.0%}")
+        k4.metric("Via audio", audio_s)
 
         st.markdown("---")
 
         for r in reversed(st.session_state.historial):
             accion = "IA Resuelve" if r["ia_resuelve"] else "Asesor Humano"
             color = "green" if r["ia_resuelve"] else "red"
+            origen_icon = "🎙️" if r.get("origen") == "audio" else "✏️"
             st.markdown(
                 f"**:{color}[{accion}]** &nbsp;|&nbsp; "
                 f"{ICONS[r['categoria']]} `{r['categoria'].upper()}` &nbsp;|&nbsp; "
                 f"Confianza: `{r['confianza']:.0%}` &nbsp;|&nbsp; "
+                f"{origen_icon} &nbsp;|&nbsp; "
                 f"{r['consulta'][:70]}{'...' if len(r['consulta']) > 70 else ''} "
                 f"&nbsp;|&nbsp; _{r['timestamp']}_"
             )
 
         st.markdown("---")
-        df_hist = pd.DataFrame(st.session_state.historial)[
-            ["timestamp", "consulta", "categoria", "confianza", "ia_resuelve", "respuesta"]
-        ]
-        df_hist.columns = ["Hora", "Consulta", "Categoria", "Confianza", "IA Resuelve", "Respuesta"]
-        csv = df_hist.to_csv(index=False).encode("utf-8")
+        df_hist = pd.DataFrame(st.session_state.historial)
+        cols_export = ["timestamp", "consulta", "categoria", "confianza", "ia_resuelve", "respuesta"]
+        if "origen" in df_hist.columns:
+            cols_export.append("origen")
+        df_export = df_hist[cols_export].copy()
+        df_export.columns = (["Hora", "Consulta", "Categoria", "Confianza",
+                               "IA Resuelve", "Respuesta"] +
+                              (["Origen"] if "origen" in df_hist.columns else []))
+        csv = df_export.to_csv(index=False).encode("utf-8")
         st.download_button(
             "Descargar historial (CSV)",
             data=csv,
