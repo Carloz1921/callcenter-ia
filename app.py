@@ -273,22 +273,47 @@ def limpiar_texto(texto):
 
 @st.cache_resource(show_spinner=False)
 def entrenar_modelo():
-    """Entrena el modelo una sola vez y lo cachea en memoria."""
-    df = pd.DataFrame(CONSULTAS_DATA, columns=['consulta', 'categoria'])
-    df['limpia'] = df['consulta'].apply(limpiar_texto)
-    X, y = df['limpia'], df['categoria']
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.20, random_state=42, stratify=y
-    )
-    pipe = Pipeline([
-        ('tfidf', TfidfVectorizer(ngram_range=(1, 2), max_features=5000,
-                                   sublinear_tf=True, min_df=1)),
-        ('clf',   LinearSVC(C=1.0, max_iter=2000, random_state=42))
-    ])
-    pipe.fit(X_train, y_train)
-    cv = cross_val_score(pipe, X, y, cv=5, scoring='accuracy')
-    acc_test = pipe.score(X_test, y_test)
-    return pipe, acc_test, cv.mean(), cv.std(), X_test, y_test
+    import pickle, os
+    if os.path.exists('modelo_callcenter_ia.pkl'):
+        with open('modelo_callcenter_ia.pkl', 'rb') as f:
+            pipe = pickle.load(f)
+        df = pd.DataFrame(CONSULTAS_DATA, columns=['consulta', 'categoria'])
+        df['limpia'] = df['consulta'].apply(limpiar_texto)
+        X, y = df['limpia'], df['categoria']
+        from sklearn.model_selection import train_test_split, cross_val_score
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.20, random_state=42, stratify=y
+        )
+        cv = cross_val_score(pipe, X, y, cv=5, scoring='accuracy')
+        acc_test = pipe.score(X_test, y_test)
+        return pipe, acc_test, cv.mean(), cv.std(), X_test, y_test
+    else:
+        df = pd.DataFrame(CONSULTAS_DATA, columns=['consulta', 'categoria'])
+        df['limpia'] = df['consulta'].apply(limpiar_texto)
+        X, y = df['limpia'], df['categoria']
+        from sklearn.model_selection import train_test_split, cross_val_score
+        from sklearn.pipeline import Pipeline
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.svm import LinearSVC
+        from sklearn.calibration import CalibratedClassifierCV
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.20, random_state=42, stratify=y
+        )
+        pipe = Pipeline([
+            ('tfidf', TfidfVectorizer(ngram_range=(1,2), max_features=5000,
+                                       sublinear_tf=True, min_df=1)),
+            ('clf', CalibratedClassifierCV(
+                LinearSVC(C=1.0, max_iter=2000, random_state=42), cv=3))
+        ])
+        pipe.fit(X_train, y_train)
+        cv = cross_val_score(pipe, X, y, cv=5, scoring='accuracy')
+        acc_test = pipe.score(X_test, y_test)
+        return pipe, acc_test, cv.mean(), cv.std(), X_test, y_test
+```
+
+Abajo donde dice **Commit changes**, escribe:
+```
+actualizo app para cargar modelo real
 
 
 def clasificar(modelo, texto, umbral=0.65):
