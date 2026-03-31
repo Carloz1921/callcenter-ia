@@ -221,7 +221,7 @@ def transcribir_audio(archivo_bytes, nombre_archivo, api_key):
     import urllib.request
     import json
 
-    url = "https://router.huggingface.co/hf-inference/models/openai/whisper-large-v3/v1/audio/transcriptions"
+    url = "https://api-inference.huggingface.co/models/openai/whisper-large-v3"
     headers = {
         "Authorization": f"Bearer {api_key}",
     }
@@ -250,7 +250,15 @@ def transcribir_audio(archivo_bytes, nombre_archivo, api_key):
 
         headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
 
-        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        req = urllib.request.Request(
+    url,
+    data=archivo_bytes,
+    headers={
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/octet-stream"
+    },
+    method="POST"
+)
         with urllib.request.urlopen(req, timeout=120) as resp:
             result = json.loads(resp.read())
 
