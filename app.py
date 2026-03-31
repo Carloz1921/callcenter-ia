@@ -212,86 +212,32 @@ def clasificar(modelo, texto, umbral=0.50):
     }
 
 
-def transcribir_audio(archivo_bytes, nombre_archivo, api_key):
-    """
-    Transcribe audio usando Hugging Face Inference API con Whisper.
-    Gratis, funciona en Peru, sin tarjeta de credito.
-    Modelo: openai/whisper-large-v3
-    """
-    import urllib.request
-    import json
-
-    url = "https://api-inference.huggingface.co/models/openai/whisper-large-v3"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-    }
+def transcribir_audio(archivo_bytes, nombre_archivo, api_key=None):
+    from transformers import pipeline
+    import tempfile
 
     try:
-        import io
-        boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW"
-        ext = nombre_archivo.split(".")[-1].lower()
-        mime_map = {
-            "mp3": "audio/mpeg", "mp4": "audio/mp4",
-            "wav": "audio/wav",  "m4a": "audio/m4a",
-            "ogg": "audio/ogg",  "webm": "audio/webm",
-            "flac": "audio/flac",
-        }
-        mime = mime_map.get(ext, "audio/mpeg")
+        # Guardar temporalmente el audio
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            tmp.write(archivo_bytes)
+            temp_path = tmp.name
 
-        body = (
-            f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="file"; filename="{nombre_archivo}"\r\n'
-            f"Content-Type: {mime}\r\n\r\n"
-        ).encode() + archivo_bytes + (
-            f"\r\n--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="language"\r\n\r\nes'
-            f"\r\n--{boundary}--\r\n"
-        ).encode()
+        # Cargar modelo Whisper local
+        transcriber = pipeline(
+            "automatic-speech-recognition",
+            model="openai/whisper-small"
+        )
 
-        headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
-
-        req = urllib.request.Request(
-    url,
-    data=archivo_bytes,
-    headers={
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/octet-stream"
-    },
-    method="POST"
-)
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            result = json.loads(resp.read())
-
-        # Nueva API devuelve {"text": "..."} directamente
-        if isinstance(result, dict):
-            if "error" in result:
-                msg = result["error"]
-                if "loading" in str(msg).lower():
-                    return None, "El modelo esta iniciando. Espera 20 segundos y vuelve a intentarlo."
-                return None, f"Error del modelo: {msg}"
-            texto = result.get("text", "").strip()
-        elif isinstance(result, list) and len(result) > 0:
-            texto = result[0].get("text", "").strip()
-        else:
-            texto = ""
+        result = transcriber(temp_path)
+        texto = result["text"].strip()
 
         if not texto:
-            return None, "No se detecto voz en el audio. Verifica que el archivo tenga audio claro."
+            return None, "No se detecto voz en el audio."
+
         return texto, None
 
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="ignore")
-        try:
-            msg = json.loads(body).get("error", body[:200])
-        except Exception:
-            msg = body[:200]
-        if e.code == 503:
-            return None, "Modelo iniciando. Espera 20 segundos y vuelve a intentarlo."
-        if e.code == 401:
-            return None, "API Key invalida. Verifica que copiaste bien tu token de Hugging Face."
-        return None, f"Error {e.code}: {msg}"
     except Exception as e:
-        return None, f"Error de conexion: {str(e)}"
+        return None, f"Error en transcripcion: {str(e)}"
 
 
 def mostrar_resultado_clasificacion(resultado, texto_consulta, origen="texto"):
@@ -441,13 +387,13 @@ with tab_audio:
             procesar_btn = st.button(
                 "Transcribir y Clasificar",
                 use_container_width=True,
-                disabled=not groq_key
+                disabled=False
             )
 
             if not groq_key:
                 st.warning("Ingresa tu token de Hugging Face en el sidebar para activar la transcripcion.")
 
-            if procesar_btn and groq_key:
+            if procesar_btn:
                 col_paso1, col_paso2 = st.columns(2)
 
                 with st.status("Procesando audio...", expanded=True) as status:
