@@ -264,7 +264,7 @@ def transcribir_audio(archivo_bytes, nombre_archivo, api_key):
 
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-1.5-flash:generateContent?key={api_key}"
+        f"gemini-2.0-flash:generateContent?key={api_key}"
     )
 
     try:
